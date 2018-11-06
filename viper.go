@@ -24,6 +24,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"github.com/go-ini/ini"
 	"io"
 	"log"
 	"os"
@@ -227,7 +228,7 @@ func New() *Viper {
 // can use it in their testing as well.
 func Reset() {
 	v = New()
-	SupportedExts = []string{"json", "toml", "yaml", "yml", "properties", "props", "prop", "hcl"}
+	SupportedExts = []string{"json", "toml", "yaml", "yml", "properties", "props", "prop", "hcl", "ini"}
 	SupportedRemoteProviders = []string{"etcd", "consul"}
 }
 
@@ -266,7 +267,7 @@ type RemoteProvider interface {
 }
 
 // SupportedExts are universally supported extensions.
-var SupportedExts = []string{"json", "toml", "yaml", "yml", "properties", "props", "prop", "hcl"}
+var SupportedExts = []string{"json", "toml", "yaml", "yml", "properties", "props", "prop", "hcl", "ini"}
 
 // SupportedRemoteProviders are universally supported remote providers.
 var SupportedRemoteProviders = []string{"etcd", "consul"}
@@ -1376,6 +1377,29 @@ func (v *Viper) unmarshalReader(in io.Reader, c map[string]interface{}) error {
 			// set innermost value
 			deepestMap[lastKey] = value
 		}
+	case "ini":
+		f, err := ini.Load(buf.Bytes())
+		if err != nil {
+			return ConfigParseError{err}
+		}
+		for _, section := range f.Sections() {
+			switch section.Name() {
+			case ini.DEFAULT_SECTION:
+				for _, key := range section.Keys() {
+					c[key.Name()] = key.Value()
+				}
+			default:
+				sec := section.Name()
+				for _, key := range section.Keys() {
+					if _, ok := c[sec]; !ok {
+						c[sec] = make(map[string]interface{})
+					}
+					m := c[sec].(map[string]interface{})
+					m[key.Name()] = key.Value()
+					c[sec] = m
+				}
+			}
+		}
 	}
 
 	insensitiviseMap(c)
@@ -1442,6 +1466,37 @@ func (v *Viper) marshalWriter(f afero.File, configType string) error {
 			return ConfigMarshalError{err}
 		}
 		if _, err = f.WriteString(string(b)); err != nil {
+			return ConfigMarshalError{err}
+		}
+	case "ini":
+		var file = ini.Empty()
+		for k, v := range c {
+			switch m := v.(type) {
+			case map[string]interface{}:
+				sec, err := file.NewSection(k)
+				if err != nil {
+					return ConfigMarshalError{err}
+				}
+				for key, val := range m {
+					_, err := sec.NewKey(key, fmt.Sprintf("%v", val))
+					if err != nil {
+						return ConfigMarshalError{err}
+					}
+				}
+			default:
+				sec, err := file.NewSection(ini.DEFAULT_SECTION)
+				if err != nil {
+					return ConfigMarshalError{err}
+				}
+				_, err = sec.NewKey(k, fmt.Sprintf("%v", v))
+				if err != nil {
+					return ConfigMarshalError{err}
+				}
+			}
+
+		}
+
+		if _, err := file.WriteTo(f); err != nil {
 			return ConfigMarshalError{err}
 		}
 	}
